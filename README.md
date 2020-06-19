@@ -39,7 +39,7 @@ Tested with
   * numpy (1.16.5)
 - BLAS, LAPACK
 - GNU Scientific Library (GSL 2.5)
-- GCC (5.4.0)
+- GCC (>=5.4.0)
 - gfortran (Fortran 77)
 - CMake (3.15.4)
 - [PAIRADISE](https://github.com/Xinglab/PAIRADISE) (optional)
