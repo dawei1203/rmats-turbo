@@ -145,8 +145,17 @@ def get_args():
                         help='Minimum Intron Length. Only impacts --novelSS behavior. Default: %(default)s', dest='mil')
     parser.add_argument('--mel', action='store', type=int, default=500,
                         help='Maximum Exon Length. Only impacts --novelSS behavior. Default: %(default)s', dest='mel')
+    # The help text for --imbalance ratio is not added to the parser
+    # since the parameter is only intended for internal use and it
+    # defaults to no filtering.
+    #
+    # Filter events where the ratio of upstream junction reads to
+    # downstream junction reads (or downstream to upstream) exceeds
+    # --imbalance-ratio. The events are filtered before running the
+    # stats model so that the FDR is based on the filtered
+    # events. If not specified then no events are filtered
     parser.add_argument('--imbalance-ratio', type=float,
-                        help='Filter events where the ratio of upstream junction reads to downstream junction reads (or downstream to upstream) exceeds --imbalance-ratio. If not specified then no events are filtered.',
+                        help=argparse.SUPPRESS,
                         dest='imbalance_ratio')
 
     args = parser.parse_args()
@@ -310,9 +319,6 @@ def process_counts(istat, tstat, counttype, ase, cstat, od, tmp, stat,
     :returns: TODO
 
     """
-    if stat:
-        filter_countfile(istat)
-
     efn = '%s/fromGTF.%s.txt' % (od, ase)
     sec_tmp = os.path.join(tmp, '%s_%s' % (counttype, ase))
     if os.path.exists(sec_tmp):
@@ -342,6 +348,14 @@ def process_counts(istat, tstat, counttype, ase, cstat, od, tmp, stat,
     inc_lvl = os.path.join(root_dir, 'rMATS_P/inclusion_level.py')
     fdr_cal = os.path.join(root_dir, 'rMATS_P/FDR.py')
     join_2f = os.path.join(root_dir, 'rMATS_P/joinFiles.py')
+
+    if stat:
+        filter_countfile(istat)
+
+    if imbalance_ratio is not None:
+        filter_countfile_by_imbalance_ratio(
+            istat, indiv_counts_file_name, indiv_counts_temp_file_name,
+            imbalance_ratio, ase)
 
     # Calculate inclusion levels
     subprocess.call([python_executable, pas_out, '-i', istat, '--o1', ostat_id, '--o2', ostat_inp,], stdout=FNULL)
@@ -376,8 +390,7 @@ def process_counts(istat, tstat, counttype, ase, cstat, od, tmp, stat,
     subprocess.call(['paste', ostat_fdr, ostat_il,], stdout=resfp)
     subprocess.call([python_executable, join_2f, efn, resfp.name, '0', '0', finfn,], stdout=FNULL)
     append_individual_counts(indiv_counts_file_name, finfn,
-                             indiv_counts_temp_file_name,
-                             imbalance_ratio, ase)
+                             indiv_counts_temp_file_name)
 
     FNULL.close()
     resfp.close()
@@ -404,14 +417,70 @@ def append_columns_with_defaults(in_file_name, out_file_name, column_names, defa
                     out_file.write(default_values_addition)
 
 
-def append_individual_counts(counts_file_name, mats_file_name, temp_file_name,
-                             imbalance_ratio, splicing_event_type):
+def filter_countfile_by_imbalance_ratio(
+        counts_file_name, indiv_counts_file_name, temp_file_name,
+        imbalance_ratio, splicing_event_type):
+    with open(counts_file_name, 'rt') as counts_file_handle:
+        with open(indiv_counts_file_name, 'rt') as indiv_counts_file_handle:
+            with open(temp_file_name, 'wt') as temp_file_handle:
+                error = filter_countfile_by_imbalance_ratio_with_handles(
+                    counts_file_handle, indiv_counts_file_handle,
+                    temp_file_handle, imbalance_ratio, splicing_event_type)
+
+    if error:
+        formatted_message = (
+            'error in filter_countfile_by_imbalance_ratio({}, {}, {}, {}, {})'
+            .format(counts_file_name, indiv_counts_file_name, temp_file_name,
+                    imbalance_ratio, splicing_event_type))
+        print(formatted_message, file=sys.stderr)
+
+    shutil.move(temp_file_name, counts_file_name)
+
+
+def filter_countfile_by_imbalance_ratio_with_handles(
+        counts_file_handle, indiv_counts_file_handle, temp_file_handle,
+        imbalance_ratio, splicing_event_type):
+    inverse_imbalance_ratio = 1 / imbalance_ratio
+    calculate_ratios = get_calculate_ratios_for_event_type(splicing_event_type)
+    if calculate_ratios is None:
+        return 'unexpected splicing_event_type: {}'.format(splicing_event_type)
+
+    for i, counts_line in enumerate(counts_file_handle):
+        counts_line = counts_line.rstrip('\n')
+        if i == 0:
+            temp_file_handle.write('{}\n'.format(counts_line))
+            indiv_counts_header_line = (
+                indiv_counts_file_handle.readline().rstrip('\n'))
+            indiv_counts_header_columns = indiv_counts_header_line.split('\t')
+            continue
+
+        counts_columns = counts_line.split('\t')
+        counts_id = counts_columns[0]
+        indiv_counts_columns = get_indiv_counts_columns_for_id(
+            counts_id, indiv_counts_file_handle)
+        if indiv_counts_columns is None:
+            return 'ID: {} not found in individual count file'.format(counts_id)
+
+        is_imbalanced, error = check_if_imbalanced(
+            imbalance_ratio, inverse_imbalance_ratio,
+            indiv_counts_header_columns, indiv_counts_columns, calculate_ratios)
+        if error:
+            return error
+
+        if is_imbalanced:
+            continue
+
+        temp_file_handle.write('{}\n'.format(counts_line))
+
+    return None
+
+
+def append_individual_counts(counts_file_name, mats_file_name, temp_file_name):
     with open(counts_file_name, 'rt') as counts_file_handle:
         with open(mats_file_name, 'rt') as mats_file_handle:
             with open(temp_file_name, 'wt') as temp_file_handle:
                 error = append_individual_counts_with_handles(
-                    counts_file_handle, mats_file_handle, temp_file_handle,
-                    imbalance_ratio, splicing_event_type)
+                    counts_file_handle, mats_file_handle, temp_file_handle)
 
     if error:
         formatted_message = (
@@ -423,16 +492,7 @@ def append_individual_counts(counts_file_name, mats_file_name, temp_file_name,
 
 
 def append_individual_counts_with_handles(counts_file_handle, mats_file_handle,
-                                          temp_file_handle, imbalance_ratio,
-                                          splicing_event_type):
-    inverse_imbalance_ratio = None
-    if imbalance_ratio is not None:
-        inverse_imbalance_ratio = 1 / imbalance_ratio
-
-    calculate_ratios = get_calculate_ratios_for_event_type(splicing_event_type)
-    if calculate_ratios is None:
-        return 'unexpected splicing_event_type: {}'.format(splicing_event_type)
-
+                                          temp_file_handle):
     for i, mats_line in enumerate(mats_file_handle):
         mats_line = mats_line.rstrip('\n')
         mats_columns = mats_line.split('\t')
@@ -446,19 +506,10 @@ def append_individual_counts_with_handles(counts_file_handle, mats_file_handle,
             continue
 
         mats_id = mats_columns[0]
-        counts_columns = get_counts_columns_for_id(mats_id, counts_file_handle)
+        counts_columns = get_indiv_counts_columns_for_id(mats_id,
+                                                         counts_file_handle)
         if counts_columns is None:
             return 'ID: {} not found in individual count file'.format(mats_id)
-
-        if imbalance_ratio is not None:
-            is_imbalanced, error = check_if_imbalanced(
-                imbalance_ratio, inverse_imbalance_ratio,
-                counts_header_columns, counts_columns, calculate_ratios)
-            if error:
-                return error
-
-            if is_imbalanced:
-                continue
 
         counts_cols_without_id = counts_columns[1:]
         combined_line = '\t'.join(mats_columns + counts_cols_without_id)
@@ -629,7 +680,7 @@ def check_if_imbalanced(imbalance_ratio, inverse_imbalance_ratio,
     return False, None
 
 
-def get_counts_columns_for_id(mats_id, counts_file_handle):
+def get_indiv_counts_columns_for_id(mats_id, counts_file_handle):
     # The IDs have the same order in both files, but some IDs may only be
     # in the counts file.
     for counts_line in counts_file_handle:

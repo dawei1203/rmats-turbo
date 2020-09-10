@@ -305,11 +305,6 @@ optional arguments:
                         behavior. Default: 50
   --mel MEL             Maximum Exon Length. Only impacts --novelSS behavior.
                         Default: 500
-  --imbalance-ratio IMBALANCE_RATIO
-                        Filter events where the ratio of upstream junction
-                        reads to downstream junction reads (or downstream to
-                        upstream) exceeds --imbalance-ratio. If not specified
-                        then no events are filtered.
 ```
 
 ## Output
